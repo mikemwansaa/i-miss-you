@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>I miss you</title>
+<meta name="description" content="Something I made for you.">
+<meta property="og:title" content="I miss you">
+<meta property="og:description" content="Something I made for you.">
+<meta name="theme-color" content="#000000">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@700&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+"use strict";
+
+/* ====================== SETTINGS ====================== */
+// Put her name here. You can also override it from the link: yoursite.com/?name=Chanda
+const DEFAULT_NAME = "Esther";
+const ENGLISH_OUTLINE = true;   // true: the heart's edge is all English "I miss you"
+
+const PHRASES = [
+  "I miss you",            // English
+  "Te extraño",            // Spanish
+  "Sinto sua falta",       // Portuguese
+  "Tu me manques",         // French
+  "Ich vermisse dich",     // German
+  "Mi manchi",             // Italian
+  "Ndikubvunika",             // Mashi
+  "Ek mis jou",            // Afrikaans
+  "Jag saknar dig",        // Swedish
+  "Jeg savner deg",        // Norwegian
+  "Kaipaan sinua",         // Finnish
+  "Tęsknię za tobą",       // Polish
+  "Chybíš mi",             // Czech
+  "Hiányzol",              // Hungarian
+  "Mi-e dor de tine",      // Romanian
+  "Ndikukumbila",           // Tumbuka
+  "Я скучаю по тебе",      // Russian
+  "Nditile iwe",      // Lunda
+  "Seni özledim",          // Turkish
+  "Aku rindu kamu",        // Indonesian
+  "Miss kita",             // Filipino
+  "Nakufuluka",            // Bemba
+  "คิดถึง",                  // Thai
+  "我想你",                  // Chinese
+  "会いたい",                 // Japanese
+  "Ndinakusakana",                // Lozi
+  "मुझे तुम्हारी याद आती है",  // Hindi
+  "Nakukumbuka",           // Swahili
+  "Ngiyakukhumbula",       // Zulu
+  "Nakuyewa"            // Nyanja
+];
+const ENGLISH = "I miss you";
+
+const FONT = '"Segoe UI", system-ui, -apple-system, "Noto Sans", "Helvetica Neue", Arial, sans-serif';
+const NAME_FONT = '"Dancing Script", "Segoe Script", "Brush Script MT", cursive';
+const BASE = [[242, 69, 47], [249, 77, 55]];   // word colours
+const HOT = [255, 230, 224];                   // flash when a word first appears
+
+const LEAD = 0.8;            // seconds before the first word
+const FADE_IN = 0.6;         // smooth fade-in
+const GLOW = 1.0;            // glow pulse after appearing
+const OUT_SPAN = 4.0;        // outline is drawn first
+const REVEAL_SPAN = 13.5;    // last word starts here
+const NAME_AT = LEAD + REVEAL_SPAN + FADE_IN + GLOW + 0.3;  // name comes in after everything settles
+const NAME_FADE = 2.0;
+const NAME_PERIOD = 2.6;     // seconds per on/off glow cycle
+
+/* ====================== SETUP ====================== */
+const NAME = ((new URLSearchParams(location.search)).get("name") || DEFAULT_NAME).trim();
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+const sc = document.createElement("canvas");     // settled words are baked here
+const sctx = sc.getContext("2d");
+
+let W = 0, H = 0, dpr = 1, t0 = 0;
+let sched = [], active = [], next = 0, nameInfo = null;
+
+const smooth = t => { t = Math.min(1, Math.max(0, t)); return t * t * (3 - 2 * t); };
+const mixc = (a, b, t) => "rgb(" + [0, 1, 2].map(i => Math.round(a[i] + (b[i] - a[i]) * t)).join(",") + ")";
+const rgba = (c, a) => "rgba(" + c[0] + "," + c[1] + "," + c[2] + "," + a + ")";
+
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+/* ====================== LAYOUT ====================== */
+function layout() {
+  const rnd = mulberry32(11);
+  const choice = a => a[Math.floor(rnd() * a.length)];
+  const wchoice = (a, w) => {
+    let s = 0; for (const x of w) s += x;
+    let r = rnd() * s;
+    for (let i = 0; i < a.length; i++) { r -= w[i]; if (r <= 0) return a[i]; }
+    return a[a.length - 1];
+  };
+  const shuffle = a => {
+    for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+    return a;
+  };
+
+  // heart geometry
+  const heartRaw = a => [
+    16 * Math.pow(Math.sin(a), 3),
+    13 * Math.cos(a) - 5 * Math.cos(2 * a) - 2 * Math.cos(3 * a) - Math.cos(4 * a)
+  ];
+  const raw = []; for (let i = 0; i < 720; i++) raw.push(heartRaw(2 * Math.PI * i / 720));
+  const ymin = Math.min(...raw.map(p => p[1])), ymax = Math.max(...raw.map(p => p[1]));
+  const SC = Math.min(W * 0.92 / 32, H * 0.88 / (ymax - ymin));
+  const MIDY = (ymax + ymin) / 2;
+  const u = SC / 22;
+  const tu = Math.max(u, 0.8);                 // text never gets too small on phones
+  const POLY = raw.map(p => [p[0] * SC, -(p[1] - MIDY) * SC]);   // centered, y down
+
+  // text helpers
+  const wcache = new Map();
+  const width = (t, px) => {
+    const k = px + "|" + t; let v = wcache.get(k);
+    if (v === undefined) { ctx.font = "700 " + px + "px " + FONT; v = ctx.measureText(t).width; wcache.set(k, v); }
+    return v;
+  };
+  const SIZES = [11, 14, 17, 20].map(v => Math.max(9, Math.round(v * tu)));
+  const WEIGHTS = [0.30, 0.34, 0.28, 0.08];
+  const GAP = Math.max(6, Math.round(9 * tu));
+  const PITCH = 21.8 * tu;
+  const INTERIOR = PHRASES.filter(p => !(ENGLISH_OUTLINE && p === ENGLISH));
+  const use = {};
+  const pickSize = (lo, hi) => wchoice(SIZES.slice(lo, hi + 1), WEIGHTS.slice(lo, hi + 1));
+  const edgeText = () => ENGLISH_OUTLINE ? ENGLISH : choice(PHRASES);
+
+  // polygon scan-line helpers
+  const intervals = y => {
+    const xs = []; let j = POLY.length - 1;
+    for (let i = 0; i < POLY.length; i++) {
+      const [xi, yi] = POLY[i], [xj, yj] = POLY[j];
+      if ((yi > y) !== (yj > y)) xs.push(xi + (y - yi) * (xj - xi) / (yj - yi));
+      j = i;
+    }
+    xs.sort((a, b) => a - b);
+    const out = []; for (let k = 0; k + 1 < xs.length; k += 2) out.push([xs[k], xs[k + 1]]);
+    return out;
+  };
+  const intersect = (A, B) => {
+    const out = []; let i = 0, j = 0;
+    while (i < A.length && j < B.length) {
+      const lo = Math.max(A[i][0], B[j][0]), hi = Math.min(A[i][1], B[j][1]);
+      if (lo < hi) out.push([lo, hi]);
+      if (A[i][1] < B[j][1]) i++; else j++;
+    }
+    return out;
+  };
+
+  // position/size of her name (drawn on top of the words, no space reserved)
+  let box = null;
+  if (NAME) {
+    const heartW = 32 * SC;
+    ctx.font = "700 100px " + NAME_FONT;
+    const w100 = ctx.measureText(NAME).width;
+    let npx = Math.min(0.46 * heartW / (w100 / 100), 0.12 * heartW);
+    npx = Math.max(npx, 22);
+    ctx.font = "700 " + npx + "px " + NAME_FONT;
+    const nw = ctx.measureText(NAME).width;
+    const ncy = -(1.6 - MIDY) * SC;
+    box = { text: NAME, px: npx, x: 0, y: ncy, hw: nw / 2 + 16 * tu, hh: npx * 0.55 + 4 * tu };
+  }
+
+  // one row piece [x0, x1]; lb / rb say whether that end touches the heart's edge
+  function buildRow(x0, x1, lb, rb, allEdge, tip) {
+    const span = x1 - x0;
+    if (span < 26 * tu && !tip) return [];
+    let items = [];
+    const single = edge => {
+      const t = edge ? edgeText() : choice(INTERIOR);
+      for (let i = SIZES.length - 1; i >= 0; i--) {
+        const w = width(t, SIZES[i]);
+        if (w <= span) { items.push({ t, px: SIZES[i], w, edge }); return; }
+      }
+      if (tip) items.push({ t, px: SIZES[0], w: width(t, SIZES[0]), edge });
+    };
+    if (allEdge) {                                       // whole row is outline
+      let remaining = span;
+      for (;;) {
+        const t = edgeText(); let px = pickSize(0, 2); let w = width(t, px);
+        let need = w + (items.length ? GAP : 0);
+        if (need > remaining) {
+          px = SIZES[0]; w = width(t, px); need = w + (items.length ? GAP : 0);
+          if (need > remaining) break;
+        }
+        items.push({ t, px, w, edge: true }); remaining -= need;
+      }
+      if (!items.length && tip) { const t = edgeText(); items.push({ t, px: SIZES[0], w: width(t, SIZES[0]), edge: true }); }
+    } else {
+      let L = null, R = null;
+      if (lb) { const t = edgeText(), px = pickSize(0, 2); L = { t, px, w: width(t, px), edge: true }; }
+      if (rb) { const t = edgeText(), px = pickSize(0, 2); R = { t, px, w: width(t, px), edge: true }; }
+      const ends = (L ? 1 : 0) + (R ? 1 : 0);
+      let remaining = span - (L ? L.w : 0) - (R ? R.w : 0) - GAP * (ends - 1);
+      if (remaining < 0) { single(lb || rb); }
+      else {
+        const mid = []; let recent = [];
+        for (;;) {                                       // main pass: mixed sizes
+          const cands = [];
+          for (let k = 0; k < 16; k++) {
+            const t = choice(INTERIOR); if (recent.includes(t)) continue;
+            const px = wchoice(SIZES, WEIGHTS), w = width(t, px);
+            if (w + GAP <= remaining) cands.push({ n: use[t] || 0, r: rnd(), t, px, w });
+          }
+          if (!cands.length) break;
+          cands.sort((a, b) => a.n - b.n || a.r - b.r);
+          const c = cands[0];
+          mid.push({ t: c.t, px: c.px, w: c.w, edge: false });
+          remaining -= c.w + GAP; use[c.t] = (use[c.t] || 0) + 1;
+          recent = recent.concat(c.t).slice(-4);
+        }
+        const small = SIZES[0];
+        for (;;) {                                       // filler pass: small words
+          const fits = INTERIOR.filter(t => !recent.includes(t) && width(t, small) + GAP <= remaining);
+          if (!fits.length) break;
+          const t = choice(fits), w = width(t, small);
+          mid.push({ t, px: small, w, edge: false });
+          remaining -= w + GAP; use[t] = (use[t] || 0) + 1;
+          recent = recent.concat(t).slice(-4);
+        }
+        shuffle(mid);
+        items = (L ? [L] : []).concat(mid, R ? [R] : []);
+      }
+    }
+    if (!items.length) return [];
+    const n = items.length, total = items.reduce((s, i) => s + i.w, 0);
+    const gap = n > 1 ? (span - total) / (n - 1) : 0;
+    let x = n > 1 ? x0 : x0 + (span - items[0].w) / 2;
+    return items.map(i => { const o = { t: i.t, px: i.px, x: x + i.w / 2, edge: i.edge }; x += i.w + gap; return o; });
+  }
+
+  // rows, top to bottom
+  const yTop = Math.min(...POLY.map(p => p[1])), yBot = Math.max(...POLY.map(p => p[1]));
+  const y0 = yTop + 16 * tu, y1 = yBot - 6 * tu;
+  const nrows = Math.floor((y1 - y0) / PITCH) + 1;
+  const pitch = (y1 - y0) / (nrows - 1);
+  const words = [];
+  for (let r = 0; r < nrows; r++) {
+    const y = y0 + r * pitch;
+    let iv = intersect(intersect(intervals(y - 3 * tu), intervals(y)), intervals(y + 3 * tu))
+      .map(p => [p[0], p[1], true, true]);
+    const tip = r >= nrows - 3;
+    if (tip && !iv.length) iv = [[-1, 1, true, true]];
+    const allEdge = r === 0 || tip;
+    for (const [a, b, lb, rb] of iv)
+      for (const w of buildRow(a, b, lb, rb, allEdge, tip))
+        words.push({ t: w.t, px: w.px, x: w.x, y, edge: w.edge, c: Math.floor(rnd() * BASE.length), at: 0 });
+  }
+
+  // reveal order: English outline first (clockwise from the notch), then the inside at random
+  const outline = words.filter(w => w.edge).sort((a, b) =>
+    ((Math.atan2(a.x, -a.y) + 2 * Math.PI) % (2 * Math.PI)) - ((Math.atan2(b.x, -b.y) + 2 * Math.PI) % (2 * Math.PI)));
+  const inner = shuffle(words.filter(w => !w.edge));
+  outline.forEach((w, i) => { w.at = LEAD + i / outline.length * OUT_SPAN; });
+  const tIn = OUT_SPAN + 0.3;
+  inner.forEach((w, j) => { w.at = LEAD + tIn + j / inner.length * (REVEAL_SPAN - tIn); });
+
+  return { list: outline.concat(inner), box };
+}
+
+/* ====================== DRAWING ====================== */
+function drawWord(g, w, fill, shadow, blur) {
+  g.font = "700 " + w.px + "px " + FONT;
+  g.fillStyle = fill;
+  g.shadowColor = shadow;
+  g.shadowBlur = blur * dpr;
+  g.fillText(w.t, w.x, w.y);
+}
+
+function bake(w) {
+  const c = BASE[w.c];
+  drawWord(sctx, w, mixc(c, c, 0), rgba(c, 0.45), 5);
+}
+
+function setup() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = sc.width = Math.round(W * dpr);
+  canvas.height = sc.height = Math.round(H * dpr);
+  for (const g of [ctx, sctx]) { g.textAlign = "center"; g.textBaseline = "middle"; }
+  const L = layout();
+  sched = L.list; nameInfo = L.box;
+  sctx.setTransform(1, 0, 0, 1, 0, 0); sctx.clearRect(0, 0, sc.width, sc.height);
+  sctx.setTransform(dpr, 0, 0, dpr, W / 2 * dpr, H / 2 * dpr);
+  active = []; next = 0;
+  const el = (performance.now() - t0) / 1000;
+  for (const w of sched) {                           // catch up (used when the window is resized)
+    if (w.at > el) break;
+    next++;
+    if (el - w.at >= FADE_IN + GLOW) bake(w); else active.push(w);
+  }
+}
+
+function drawName(el) {
+  if (!nameInfo) return;
+  const a = (el - NAME_AT) / NAME_FADE;
+  if (a <= 0) return;
+  const f = smooth(a);
+  const phase = Math.max(0, el - NAME_AT - NAME_FADE);
+  const p = a < 1 ? 1 : 0.5 + 0.5 * Math.cos(2 * Math.PI * phase / NAME_PERIOD);   // on -> off -> on
+  const e = smooth(p);
+  const alpha = f * (0.2 + 0.8 * e);
+  ctx.save();
+  ctx.font = "700 " + nameInfo.px + "px " + NAME_FONT;
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = "rgba(0,0,0," + (0.85 * alpha) + ")";
+  ctx.lineWidth = nameInfo.px * 0.22;
+  ctx.strokeText(nameInfo.text, nameInfo.x, nameInfo.y);
+  ctx.shadowColor = "rgba(255,50,40," + alpha + ")";
+  ctx.shadowBlur = f * (4 + 38 * e) * dpr;
+  ctx.fillStyle = "rgba(255,238,234," + alpha + ")";
+  ctx.fillText(nameInfo.text, nameInfo.x, nameInfo.y);
+  ctx.fillText(nameInfo.text, nameInfo.x, nameInfo.y);       // second pass thickens the glow
+  ctx.restore();
+}
+
+function frame(now) {
+  const el = (now - t0) / 1000;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(sc, 0, 0);
+  ctx.setTransform(dpr, 0, 0, dpr, W / 2 * dpr, H / 2 * dpr);
+
+  while (next < sched.length && sched[next].at <= el) active.push(sched[next++]);
+  for (let i = active.length - 1; i >= 0; i--) {
+    const w = active[i], age = el - w.at, c = BASE[w.c];
+    if (age < FADE_IN) {
+      drawWord(ctx, w, mixc([0, 0, 0], c, smooth(age / FADE_IN)), "rgba(0,0,0,0)", 0);
+    } else if (age < FADE_IN + GLOW) {
+      const g = (age - FADE_IN) / GLOW, s = Math.sin(Math.PI * g);
+      drawWord(ctx, w, mixc(c, HOT, 0.85 * s * s), rgba(c, 0.65), 4 * smooth(g) + 12 * s * s);
+    } else {
+      bake(w);
+      ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.drawImage(sc, 0, 0); ctx.restore();
+      active.splice(i, 1);
+    }
+  }
+  drawName(el);
+  requestAnimationFrame(frame);
+}
+
+/* ====================== START ====================== */
+let resizeTimer = 0;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    const dw = Math.abs(window.innerWidth - W), dh = Math.abs(window.innerHeight - H);
+    if (dw > 2 || dh > 120) setup();               // ignore phone address-bar wobble
+  }, 150);
+});
+
+// tap / click after it has finished to watch it again
+window.addEventListener("pointerdown", () => {
+  if ((performance.now() - t0) / 1000 > NAME_AT + NAME_FADE + 1) { t0 = performance.now(); setup(); }
+});
+
+(async function init() {
+  try {
+    await Promise.race([
+      document.fonts.load('700 48px "Dancing Script"'),
+      new Promise(r => setTimeout(r, 1500))
+    ]);
+  } catch (e) { /* falls back to a system script font */ }
+  t0 = performance.now();
+  setup();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
